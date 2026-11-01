@@ -1,0 +1,4 @@
+faster-whisper>=1.1
+av>=12
+numpy
+gradio>=5        # 웹 데모(app.py)용. CLI만 쓸 거면 없어도 됨
