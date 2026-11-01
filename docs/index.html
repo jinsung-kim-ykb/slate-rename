@@ -1,0 +1,90 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>slate-rename — 슬레이트 음성으로 촬영본 파일명 자동 정리</title>
+<meta name="description" content="촬영본 앞 15초의 슬레이트 콜(12의 3)을 듣고 파일명을 S12_T03 으로 바꿔 줍니다. 서버 없이 브라우저 안에서 동작합니다.">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header>
+  <div class="wrap">
+    <h1>🎬 slate-rename</h1>
+    <p class="lead">촬영본 앞 15초에서 슬레이트 콜 <b>"12의 3"</b>, <b>"씬 12 테이크 3"</b>을 듣고<br>
+      <code>C0001.MP4</code> → <code>S12_T03_C0001.MP4</code> 처럼 파일명을 바꿔 줍니다.</p>
+    <p class="sub">서버 없음 · 파일은 이 컴퓨터를 떠나지 않습니다 · 음성 인식(Whisper)도 브라우저 안에서 실행 ·
+      <a href="https://github.com/jinsung-kim-ykb/slate-rename" target="_blank" rel="noopener">GitHub</a></p>
+  </div>
+</header>
+
+<main class="wrap">
+  <section class="card" id="step1">
+    <h2>1. 촬영본 고르기</h2>
+    <div class="row">
+      <button id="pickDir" class="primary">📁 촬영 폴더 선택</button>
+      <label class="btn">📄 파일 선택<input type="file" id="pickFiles" multiple accept="video/*,audio/*,.mp4,.mov,.m4v,.wav,.bwf,.mxf,.mts" hidden></label>
+      <span id="pickInfo" class="muted"></span>
+    </div>
+    <p class="hint" id="fsHint">폴더를 선택하면 그 자리에서 파일명을 바로 바꿀 수 있습니다(Chrome·Edge). 파일 선택으로 올리면 결과를 보고 <b>이름 변경 스크립트</b>를 내려받아 실행하는 방식입니다.</p>
+  </section>
+
+  <section class="card" id="step2">
+    <h2>2. 설정</h2>
+    <div class="grid">
+      <label>앞에서 몇 초를 들을까요 <input type="number" id="seconds" value="15" min="5" max="30"> 초</label>
+      <label>이름 형식 <input type="text" id="template" value="S{scene:02d}{suffix}_T{take:02d}" spellcheck="false"></label>
+      <label>카메라 표시 <input type="text" id="cam" placeholder="예: A (여러 대일 때)" maxlength="3"></label>
+      <label>인식 모델
+        <select id="model">
+          <option value="onnx-community/whisper-small">whisper-small (권장, 약 250MB)</option>
+          <option value="onnx-community/whisper-base">whisper-base (가벼움, 약 80MB, 덜 정확)</option>
+          <option value="onnx-community/whisper-medium">whisper-medium (정확, 약 800MB, 느림)</option>
+        </select>
+      </label>
+      <label class="chk"><input type="checkbox" id="keepOriginal" checked> 원본 파일명을 뒤에 붙이기 (<code>S12_T03_C0001.MP4</code>)</label>
+      <label class="chk"><input type="checkbox" id="detectOk"> 클립 끝부분에서 OK/NG 콜도 판별 (시간 2배)</label>
+    </div>
+  </section>
+
+  <section class="card" id="step3">
+    <h2>3. 실행</h2>
+    <div class="row">
+      <button id="run" class="primary" disabled>▶ 듣고 이름 정하기</button>
+      <button id="apply" disabled>✔ 선택한 파일 이름 바꾸기</button>
+      <button id="script" disabled>⬇ 이름 변경 스크립트 받기</button>
+      <button id="csv" disabled>⬇ 정리표(CSV) 받기</button>
+      <button id="undo" disabled>↩ 방금 바꾼 것 되돌리기</button>
+    </div>
+    <div id="progress" class="progress hidden"><div class="bar" id="bar"></div><span id="progressText"></span></div>
+    <p id="status" class="status"></p>
+    <div class="tablewrap">
+      <table id="table">
+        <thead><tr><th><input type="checkbox" id="checkAll" checked></th><th>원본</th><th>들린 말</th><th>씬</th><th>테이크</th><th>OK</th><th>새 이름</th><th>상태</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+    <p class="hint">못 알아들은 파일은 이름을 건드리지 않습니다. "들린 말"을 보고 씬·테이크 칸을 직접 고친 뒤 적용해도 됩니다.</p>
+  </section>
+
+  <section class="card muted-card">
+    <h2>어떻게 동작하나요</h2>
+    <ol>
+      <li>파일 전체가 아니라 <b>앞 15초 소리만</b> 읽습니다. 수십 GB 촬영본도 바로 처리됩니다.</li>
+      <li>Whisper 음성 인식 모델이 브라우저 안에서 돌아갑니다. 첫 실행 때 한 번 내려받고(수백 MB) 그 뒤로는 캐시를 씁니다. GPU가 있으면 WebGPU 로 빨라집니다.</li>
+      <li>"12의 3", "십이에 삼", "열둘에 셋", "씬 12 테이크 3", "12A의 3" 등을 씬·테이크로 해석합니다.</li>
+      <li>이름 변경은 브라우저의 폴더 권한으로 그 자리에서 하거나, 변경 스크립트(.bat / .sh)를 받아 실행합니다.</li>
+    </ol>
+    <p class="hint">지원: MP4/MOV(AAC, PCM), WAV. MXF·MTS·BRAW 는 브라우저에서 열 수 없어 명령줄 버전(<a href="https://github.com/jinsung-kim-ykb/slate-rename" target="_blank" rel="noopener">GitHub</a>)을 쓰세요.
+      권장 콜 방식은 <b>"씬 십이, 테이크 삼"</b>처럼 단어를 붙여 말하는 것입니다 — 숫자만 짧게 말하면 오인식이 늘어납니다.</p>
+  </section>
+</main>
+
+<footer class="wrap muted">slate-rename · 넥스트라 · 브라우저 전용 데모 버전</footer>
+
+<script src="mp4box.all.min.js"></script>
+<script src="parser.js"></script>
+<script src="audio.js"></script>
+<script src="app.js"></script>
+</body>
+</html>

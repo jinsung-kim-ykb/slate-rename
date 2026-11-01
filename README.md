@@ -141,3 +141,13 @@ python slate_rename.py "촬영폴더" --backend sherpa-onnx --model-dir ./models
 
 검증 상태: 파이프라인 전체(추출→인식→파싱→변경→정리표→재실행 건너뜀→되돌리기)는 합성 클립으로 동작 확인됨.
 단, 사용한 한국어 합성 음성 품질이 낮아("삼"이 "사"처럼 발음됨) **실제 사람 목소리에 대한 인식률은 아직 측정되지 않음.** 5번 항목대로 실측 필요.
+
+## 8. 브라우저 버전 (설치 없음)
+
+`docs/` 폴더가 GitHub Pages 로 열리는 브라우저 전용 버전입니다: **https://jinsung-kim-ykb.github.io/slate-rename/**
+
+- 서버 없이 동작합니다. 음성 인식(Whisper)도 transformers.js 로 브라우저 안에서 돌고, 파일은 PC 밖으로 나가지 않습니다.
+- Chrome/Edge 에서 "촬영 폴더 선택" → 듣기 → 그 자리에서 파일명 변경. 다른 브라우저는 파일 선택 후 이름 변경 스크립트(.bat/.sh)를 받아 실행.
+- 파일 전체가 아니라 앞 15초만 읽습니다 (WAV 는 바이트 구간 직접 읽기, MP4/MOV 는 mp4box.js + WebCodecs).
+- 첫 실행 때 모델(whisper-small 약 250MB)을 한 번 내려받습니다. MXF/MTS/BRAW 는 브라우저에서 열 수 없으니 명령줄 버전을 쓰세요.
+- 테스트: `docs/` 를 아무 정적 서버로 띄우고 `index.html?mock=1` 로 열면 음성 인식 대신 파일명 기반 가짜 결과로 전체 흐름을 확인할 수 있습니다. 파서 테스트는 `node tests/test_parser.mjs`.
