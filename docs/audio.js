@@ -62,45 +62,66 @@
   }
 
   // ---------------- MP4 / MOV (mp4box + WebCodecs) ----------------
+  // 최상위 atom 목록: [{type, start, size}]  (size==1 이면 64비트 확장 크기, size==0 이면 파일 끝까지)
+  async function scanTopAtoms(file) {
+    const out = []; let pos = 0;
+    for (let i = 0; i < 64 && pos + 8 <= file.size; i++) {
+      const dv = new DataView(await readSlice(file, pos, Math.min(file.size, pos + 16)));
+      let size = dv.getUint32(0);
+      const type = String.fromCharCode(dv.getUint8(4), dv.getUint8(5), dv.getUint8(6), dv.getUint8(7));
+      if (size === 1 && dv.byteLength >= 16) size = Number(dv.getBigUint64(8));
+      else if (size === 0) size = file.size - pos;
+      if (!/^[\w ]{4}$/.test(type) || size < 8) break;
+      out.push({ type, start: pos, size });
+      pos += size;
+    }
+    return out;
+  }
+
   async function extractMp4(file, start, dur, log = () => {}) {
     if (typeof MP4Box === 'undefined') throw new Error('mp4box.js 가 로드되지 않음');
     const mp4 = MP4Box.createFile();
     let info = null, err = null;
     mp4.onError = (e) => { err = e; };
     mp4.onReady = (i) => { info = i; };
-    const CHUNK = 4 * 1024 * 1024;
-    // 1) moov(목차) 찾기: 보통 앞에 있지만 끝에 있는 파일도 있음 → appendBuffer 가 알려주는 다음 위치로 점프
-    let pos = 0;
-    for (let i = 0; i < 64 && !info && !err && pos < file.size; i++) {
-      const buf = await readSlice(file, pos, Math.min(file.size, pos + CHUNK));
-      buf.fileStart = pos;
-      const next = mp4.appendBuffer(buf);
-      pos = (typeof next === 'number' && next > pos) ? next : pos + CHUNK;
+    // 1) 최상위 atom 헤더(16바이트)만 읽어 ftyp/moov 위치를 찾고, mdat 는 헤더만 넘긴다.
+    //    → 수십 GB 파일이라도 실제로 읽는 양은 moov(목차) 크기뿐이다.
+    const atoms = await scanTopAtoms(file);
+    for (const a of atoms) {
+      const full = a.type === 'ftyp' || a.type === 'moov' || a.size <= 1024 * 1024;
+      const len = full ? a.size : Math.min(a.size, 16);
+      const buf = await readSlice(file, a.start, Math.min(file.size, a.start + len));
+      buf.fileStart = a.start;
+      mp4.appendBuffer(buf);
+      if (info || err) break;
+    }
+    if (!info && !err) {
+      // 2) 드물게 위 방식이 안 먹으면 앞에서부터 순차 스캔 (최대 64 x 4MB)
+      const CHUNK = 4 * 1024 * 1024; let pos = 0;
+      for (let i = 0; i < 64 && !info && !err && pos < file.size; i++) {
+        const buf = await readSlice(file, pos, Math.min(file.size, pos + CHUNK));
+        buf.fileStart = pos;
+        const next = mp4.appendBuffer(buf);
+        pos = (typeof next === 'number' && next > pos) ? next : pos + CHUNK;
+      }
     }
     if (err) throw new Error('mp4box: ' + err);
     if (!info) throw new Error('moov 를 찾지 못함 (지원하지 않는 컨테이너)');
+
     const track = info.audioTracks && info.audioTracks[0];
     if (!track) throw new Error('오디오 트랙 없음');
     log(`오디오 트랙: ${track.codec} ${track.audio.sample_rate}Hz ${track.audio.channel_count}ch`);
 
-    // 2) start~start+dur 구간 샘플 추출
-    const samples = [];
-    mp4.setExtractionOptions(track.id, null, { nbSamples: 64 });
-    mp4.onSamples = (id, user, s) => { samples.push(...s); };
-    mp4.start();
-    const seek = mp4.seek(start, true);
-    pos = seek.offset || 0;
+    // 3) 구간에 해당하는 샘플의 파일 내 위치(offset/size)를 목차에서 읽어, 그 바이트 범위만 한 번에 읽는다.
+    const all = (mp4.getTrackById(track.id).samples) || [];
+    if (!all.length) throw new Error('샘플 목록이 비어 있음');
     const endT = start + dur;
-    const lastT = () => (samples.length ? samples[samples.length - 1].cts / samples[samples.length - 1].timescale : -1);
-    for (let i = 0; i < 400 && pos < file.size && lastT() < endT; i++) {
-      const buf = await readSlice(file, pos, Math.min(file.size, pos + CHUNK));
-      buf.fileStart = pos;
-      const next = mp4.appendBuffer(buf);
-      pos = (typeof next === 'number' && next > pos) ? next : pos + CHUNK;
-    }
-    mp4.flush();
-    if (!samples.length) throw new Error('오디오 샘플을 읽지 못함');
-    const wanted = samples.filter(s => (s.cts + s.duration) / s.timescale > start && s.cts / s.timescale < endT);
+    const wanted = all.filter(s => (s.cts + s.duration) / s.timescale > start && s.cts / s.timescale < endT);
+    if (!wanted.length) throw new Error('구간에 오디오 샘플 없음');
+    const lo = Math.min(...wanted.map(s => s.offset)), hi = Math.max(...wanted.map(s => s.offset + s.size));
+    if (hi - lo > 256 * 1024 * 1024) throw new Error('오디오 샘플이 파일에 넓게 흩어져 있어 읽을 수 없음');
+    const blob = new Uint8Array(await readSlice(file, lo, hi));
+    for (const s of wanted) s.data = blob.subarray(s.offset - lo, s.offset - lo + s.size);
 
     const entry = mp4.getTrackById(track.id).mdia.minf.stbl.stsd.entries[0];
     const codec = track.codec || entry.type;
@@ -215,10 +236,11 @@
       if (typeof MP4Box !== 'undefined') {
         const mp4 = MP4Box.createFile(); let info = null;
         mp4.onReady = (i) => { info = i; }; mp4.onError = () => {};
-        const CHUNK = 4 * 1024 * 1024; let pos = 0;
-        for (let i = 0; i < 64 && !info && pos < file.size; i++) {
-          const buf = await readSlice(file, pos, Math.min(file.size, pos + CHUNK)); buf.fileStart = pos;
-          const next = mp4.appendBuffer(buf); pos = (typeof next === 'number' && next > pos) ? next : pos + CHUNK;
+        for (const a of await scanTopAtoms(file)) {
+          const full = a.type === 'ftyp' || a.type === 'moov' || a.size <= 1024 * 1024;
+          const buf = await readSlice(file, a.start, Math.min(file.size, a.start + (full ? a.size : 16)));
+          buf.fileStart = a.start; mp4.appendBuffer(buf);
+          if (info) break;
         }
         return info ? info.duration / info.timescale : null;
       }

@@ -54,31 +54,30 @@
     return `${10 + (n % 5)}의 ${1 + (n % 3)}`;
   }
 
-  async function recognizeSlate(audio, hint) {
-    // 전체 창 → 말소리 구간만 자른 창 순서로 들어 보고, 먼저 씬/테이크가 나오는 결과 사용 (파이썬 버전과 동일)
+  async function recognizeSlate(audio, hint, onStage) {
+    // 브라우저 Whisper 는 한 번 듣는 데 수십 초가 걸릴 수 있어 최대 2번만 듣는다:
+    //  1) 첫 말소리 주변만 짧게 자른 창 (슬레이트 콜이 보통 여기 있음)  2) 실패하면 앞부분 전체
     const heard = [];
     const tryText = async (name, clip) => {
-      const text = await asr.transcribe(padSilence(clip.slice ? clip.slice() : new Float32Array(clip)), hint);
+      onStage && onStage(name);
+      const text = await asr.transcribe(padSilence(new Float32Array(clip)), hint);
       heard.push(`${name}: ${text}`);
       const info = parseSlate(text);
       return info.complete ? { info, text } : null;
     };
-    let r = await tryText('전체', audio);
-    if (!r) {
-      const bursts = speechBursts(audio).slice(0, 3);
-      for (let i = 0; i < bursts.length && !r; i++) {
-        const [s, e] = bursts[i];
-        const a = Math.max(0, s - 0.4), b = Math.min(audio.length / SR, Math.max(e + 0.6, s + 2.5));
-        if ((b - a) * SR < SR * 0.5) continue;
-        r = await tryText(`구간${i + 1}`, audio.subarray(Math.floor(a * SR), Math.floor(b * SR)));
-        if (!r && i + 1 < bursts.length && bursts[i + 1][0] - e < 1.5) {
-          const b2 = Math.min(audio.length / SR, bursts[i + 1][1] + 0.6);
-          r = await tryText(`구간${i + 1}+${i + 2}`, audio.subarray(Math.floor(a * SR), Math.floor(b2 * SR)));
-        }
-      }
+    let r = null;
+    const bursts = speechBursts(audio);
+    if (bursts.length) {
+      const [s, e] = bursts[0];
+      // 첫 말소리부터, 바로 이어지는 말소리(1.5초 이내)까지 합쳐 한 창으로
+      let end = e;
+      for (let i = 1; i < bursts.length && bursts[i][0] - end < 1.5; i++) end = bursts[i][1];
+      const a = Math.max(0, s - 0.4), b = Math.min(audio.length / SR, Math.max(end + 0.6, s + 2.5));
+      if (b - a < audio.length / SR - 1) r = await tryText('말소리 구간', audio.subarray(Math.floor(a * SR), Math.floor(b * SR)));
     }
+    if (!r) r = await tryText('앞부분 전체', audio);
     if (r) return { info: r.info, heard: r.text };
-    return { info: parseSlate(heard[0] ? heard[0].replace(/^전체: /, '') : ''), heard: heard.join(' | ') };
+    return { info: parseSlate(''), heard: heard.map(h => h.replace(/^[^:]+: /, '')).filter(Boolean).join(' | ') };
   }
 
   // ---------------- 파일 고르기 ----------------
@@ -125,11 +124,13 @@
         if (p.status === 'progress' && p.file) showProgress(true, (p.progress || 0) / 100, `모델 내려받는 중 ${p.file.split('/').pop()} ${Math.round(p.progress || 0)}%`);
         else if (p.status === 'initiate') showProgress(true, 0, `모델 파일 준비: ${p.file || ''}`);
       });
-      setStatus(`인식 엔진 준비 완료 (${loaded.device === 'webgpu' ? 'GPU 가속' : loaded.device === 'mock' ? '모의 모드' : 'CPU'}). 듣기 시작합니다.`);
+      setStatus(loaded.device === 'wasm'
+        ? '인식 엔진 준비 완료 — 이 브라우저는 GPU 가속(WebGPU)을 못 써서 CPU 로 돌립니다. 클립당 30초 이상 걸릴 수 있으니 느리면 모델을 whisper-base 로 바꾸거나 명령줄 버전을 쓰세요.'
+        : `인식 엔진 준비 완료 (${loaded.device === 'webgpu' ? 'GPU 가속' : '모의 모드'}). 듣기 시작합니다.`, loaded.device === 'wasm' ? 'warn' : '');
       const t0 = performance.now();
       for (let i = 0; i < state.items.length; i++) {
         const it = state.items[i];
-        showProgress(true, i / state.items.length, `${it.name} 듣는 중... (${i + 1}/${state.items.length})`);
+        showProgress(true, i / state.items.length, `${it.name} 소리 읽는 중... (${i + 1}/${state.items.length})`);
         it.heard = ''; it.info = null; it.ok = ''; it.newName = ''; it.note = '';
         if (ALREADY.test(it.name)) { it.status = 'skip'; it.note = '이미 씬/테이크 이름'; render(); continue; }
         if (!BROWSER_OK.test(it.name)) { it.status = 'bad'; it.note = '브라우저에서 열 수 없는 형식 (명령줄 버전 사용)'; render(); continue; }
@@ -137,7 +138,7 @@
           const audio = await extractAudio(it.file, 0, seconds);
           if (!audio.length) throw new Error('오디오 트랙 없음');
           const level = rmsDb(audio);
-          const { info, heard } = await recognizeSlate(audio, { name: it.name, idx: i, kind: 'head' });
+          const { info, heard } = await recognizeSlate(audio, { name: it.name, idx: i, kind: 'head' }, (stage) => showProgress(true, i / state.items.length, `${it.name} 인식 중 (${stage})... (${i + 1}/${state.items.length})`));
           it.heard = heard;
           if (detectOk) {
             const dur = await getDuration(it.file);
